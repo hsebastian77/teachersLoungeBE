@@ -85,6 +85,7 @@ const verifyUserLogin = async (req, res, next) => {
     const sql = `
       SELECT 
         U.email, 
+        U.username,
         U.firstname, 
         U.lastname, 
         U.password, 
@@ -116,6 +117,7 @@ const verifyUserLogin = async (req, res, next) => {
         message: "User logged in successfully",
         user: {
           Email: user.email,
+          Username: user.username,
           FirstName: user.firstname,
           LastName: user.lastname,
           SchoolName: user.schoolname, // Use schoolname instead of schoolid
@@ -142,17 +144,20 @@ const registerNewUser = async (req, res, next) => {
   console.log(req.body);
 
   try {
-    // Query to check if the user already exists
-    const checkUserQuery = "SELECT * FROM USERS WHERE email = $1";
-    const checkUserResult = await pool.query(checkUserQuery, [req.body.username]);
+    const email = req.body.email;
+    const username = req.body.username || `${req.body.firstName} ${req.body.lastName}`;
 
-    // User already exists
+    // Check if email already exists
+    const checkUserQuery = "SELECT * FROM USERS WHERE email = $1";
+    const checkUserResult = await pool.query(checkUserQuery, [email]);
+
     if (checkUserResult.rows.length > 0) {
       const user = checkUserResult.rows[0];
       return res.status(400).json({
-        message: "This username is already taken",
+        message: "This email is already registered",
         data: {
           Email: user.email,
+          Username: user.username,
           FirstName: user.firstname,
           LastName: user.lastname,
           SchoolID: user.schoolid,
@@ -166,23 +171,25 @@ const registerNewUser = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(req.body.password, salt);
 
     // Generate JWT for the user
-    const token = generateToken(req.body.username);
+    const token = generateToken(email);
 
     // Insert new user into the database
     const insertUserQuery =
-      "INSERT INTO USERS (Email, FirstName, LastName, Password, SchoolID, Role) VALUES ($1, $2, $3, $4, $5, $6)";
+      "INSERT INTO USERS (Email, Username, FirstName, LastName, Password, SchoolID, Role) VALUES ($1, $2, $3, $4, $5, $6, $7)";
+
     await pool.query(insertUserQuery, [
-      req.body.username,
+      email,
+      username,
       req.body.firstName,
       req.body.lastName,
       hashedPassword,
-      1, // Assuming 1 is a placeholder for SchoolID
+      1,
       req.body.role
     ]);
 
-    // Respond with success message and user data
     return res.status(200).json({
-      Email: req.body.username,
+      Email: email,
+      Username: username,
       FirstName: req.body.firstName,
       LastName: req.body.lastName,
       SchoolID: 1,
@@ -283,7 +290,7 @@ const updateUserInfo = async (req, res, next) => {
   const client = await pool.connect();
 
   try {
-    const { email, newEmail, firstname, lastname, schoolName } = req.body;
+    const { email, newEmail, firstname, lastname, username, schoolName } = req.body;
 
     console.log("Received request to update user info for email:", email);
 
@@ -351,6 +358,11 @@ const updateUserInfo = async (req, res, next) => {
     if (lastname) {
       updateQuery += ` lastname = $${index},`;
       updateValues.push(lastname.trim());
+      index++;
+    }
+    if (username) {
+      updateQuery += ` username = $${index},`;
+      updateValues.push(username.trim());
       index++;
     }
 
@@ -561,10 +573,12 @@ const getAllApprovedPosts = async (req, res, next) => {
     const sql = `
       SELECT p.*, 
              c.communityname, 
+             COALESCE(u.username, u.firstname || ' ' || u.lastname, p.email) AS username,
              COALESCE(COUNT(pl.postid), 0) AS likescount, 
              COALESCE(cmt.commentscount, 0) AS commentscount
       FROM POST p
       LEFT JOIN COMMUNITY c ON p.communityid = c.communityid
+      LEFT JOIN USERS u ON p.email = u.email
       LEFT JOIN POST_LIKES pl ON p.postid = pl.postid
       LEFT JOIN (
         SELECT postid, COUNT(*) AS commentscount
@@ -573,7 +587,7 @@ const getAllApprovedPosts = async (req, res, next) => {
       ) cmt ON p.postid = cmt.postid
       LEFT JOIN mutes m ON (m.muter = $2 AND m.mutee = p.email)
       WHERE p.approved = $1 AND m.muter IS NULL
-      GROUP BY p.postid, c.communityname, cmt.commentscount
+      GROUP BY p.postid, c.communityname, u.username, u.firstname, u.lastname, cmt.commentscount
     `;
 
     const results = await pool.query(sql, [1, userEmail]); // 1 for approved posts
@@ -613,20 +627,22 @@ const fileUpload = async (req, res) => {
 const getAllApprovedPostsByUser = async (req, res, next) => {
   console.log('getAllApprovedPostsByUser hit');
 
-  const { username } = req.params; // This grabs the username from the URL parameter
+  const { username: userEmail } = req.params; // This grabs the userEmail from the URL parameter
 
-  if (!username) {
-    return res.status(400).json({ message: "Username is required" });
+  if (!userEmail) {
+    return res.status(400).json({ message: "UserEmail is required" });
   }
 
   try {
     const sql = `
       SELECT p.*, 
              c.communityname, 
+             COALESCE(u.username, u.firstname || ' ' || u.lastname, p.email) AS username,
              COALESCE(COUNT(pl.postid), 0) AS likescount, 
              COALESCE(cmt.commentscount, 0) AS commentscount
       FROM POST p
       LEFT JOIN COMMUNITY c ON p.communityid = c.communityid
+      LEFT JOIN USERS u ON p.email = u.email
       LEFT JOIN POST_LIKES pl ON p.postid = pl.postid
       LEFT JOIN (
         SELECT postid, COUNT(*) AS commentscount
@@ -635,10 +651,10 @@ const getAllApprovedPostsByUser = async (req, res, next) => {
       ) cmt ON p.postid = cmt.postid
       WHERE p.approved = $1 
         AND p.email = $2  -- Filter posts based on the username (which is the email)
-      GROUP BY p.postid, c.communityname, cmt.commentscount
+      GROUP BY p.postid, c.communityname, u.username, u.firstname, u.lastname, cmt.commentscount
     `;
 
-    const results = await pool.query(sql, [1, username]); // Fetch posts by username (email)
+    const results = await pool.query(sql, [1, userEmail]); // Fetch posts by username (email)
 
     if (results.rows.length === 0) {
       return res.status(200).json({ data: [] });
@@ -889,10 +905,12 @@ const getCommunityApprovedPosts = async (req, res, next) => {
   const sql = `
     SELECT p.*, 
            c.communityname, 
+           COALESCE(u.username, u.firstname || ' ' || u.lastname, p.email) AS username,
            COALESCE(COUNT(pl.postid), 0) AS likescount, 
            COALESCE(cmt.commentscount, 0) AS commentscount
     FROM POST p
     LEFT JOIN COMMUNITY c ON p.communityid = c.communityid
+    LEFT JOIN USERS u ON p.email = u.email
     LEFT JOIN POST_LIKES pl ON p.postid = pl.postid
     LEFT JOIN (
       SELECT postid, COUNT(*) AS commentscount
@@ -901,7 +919,7 @@ const getCommunityApprovedPosts = async (req, res, next) => {
     ) cmt ON p.postid = cmt.postid
     LEFT JOIN mutes m ON (m.muter = $2 AND m.mutee = p.email)
     WHERE p.communityid = $1 AND p.approved = 1 AND m.muter IS NULL
-    GROUP BY p.postid, c.communityname, cmt.commentscount;
+    GROUP BY p.postid, c.communityname, u.username, u.firstname, u.lastname, cmt.commentscount;
   `;
 
   const values = [communityID, userEmail];
@@ -1356,17 +1374,18 @@ const getUserInfo = async (req, res, next) => {
 
   // Updated SQL query with JOIN to include the schoolname
   const sql = `
-    SELECT 
-      U.email, 
-      U.firstname, 
-      U.lastname, 
-      S.schoolname, 
-      U.role,
-      U.profilepiclink
-    FROM USERS AS U
-    INNER JOIN SCHOOL AS S ON U.schoolid = S.schoolid
-    WHERE U.email = $1;
-  `;
+  SELECT 
+    U.email,
+    U.username,
+    U.firstname, 
+    U.lastname, 
+    S.schoolname, 
+    U.role,
+    U.profilepiclink
+  FROM USERS AS U
+  INNER JOIN SCHOOL AS S ON U.schoolid = S.schoolid
+  WHERE U.email = $1;
+`;
 
   try {
     const client = await pool.connect();
