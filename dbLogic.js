@@ -573,7 +573,7 @@ const getAllApprovedPosts = async (req, res, next) => {
     const sql = `
       SELECT p.*, 
              c.communityname, 
-             COALESCE(u.username, u.firstname || ' ' || u.lastname, p.email) AS username,
+             COALESCE(u.username, u.firstname || ' ' || u.lastname, 'Deleted Account') AS username,
              COALESCE(COUNT(pl.postid), 0) AS likescount, 
              COALESCE(cmt.commentscount, 0) AS commentscount
       FROM POST p
@@ -637,7 +637,7 @@ const getAllApprovedPostsByUser = async (req, res, next) => {
     const sql = `
       SELECT p.*, 
              c.communityname, 
-             COALESCE(u.username, u.firstname || ' ' || u.lastname, p.email) AS username,
+             COALESCE(u.username, u.firstname || ' ' || u.lastname, 'Deleted Account') AS username
              COALESCE(COUNT(pl.postid), 0) AS likescount, 
              COALESCE(cmt.commentscount, 0) AS commentscount
       FROM POST p
@@ -905,7 +905,7 @@ const getCommunityApprovedPosts = async (req, res, next) => {
   const sql = `
     SELECT p.*, 
            c.communityname, 
-           COALESCE(u.username, u.firstname || ' ' || u.lastname, p.email) AS username,
+           COALESCE(u.username, u.firstname || ' ' || u.lastname, 'Deleted Account') AS username,
            COALESCE(COUNT(pl.postid), 0) AS likescount, 
            COALESCE(cmt.commentscount, 0) AS commentscount
     FROM POST p
