@@ -1,6 +1,7 @@
 import pool from "./database.js";
 import bcrypt from "bcrypt";
 import { generateToken } from "./utils/tokenGenerator.js";
+import { sendSignupVerificationCode } from "./emailService.js";
 import { s3Upload } from "./fileManagement.js";
 import multer from "multer";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
@@ -15,6 +16,21 @@ const s3 = new S3Client({
   },
   region: process.env.S3_REGION,
 });
+
+const signupVerificationStore = new Map();
+const SIGNUP_CODE_EXPIRY_MS = 10 * 60 * 1000;
+const MAX_SIGNUP_VERIFY_ATTEMPTS = 5;
+
+// Clears stale verification entries so in-memory state does not grow forever.
+const pruneExpiredSignupVerifications = () => {
+  const now = Date.now();
+
+  for (const [email, entry] of signupVerificationStore.entries()) {
+    if (entry.expiresAt <= now) {
+      signupVerificationStore.delete(email);
+    }
+  }
+};
 
 //Functions to connect to DB
 const connectDB = (req, res, next) => {
@@ -81,6 +97,12 @@ const verifyUserLogin = async (req, res, next) => {
   const client = await pool.connect();
 
   try {
+    const normalizedEmail = req.body.username?.trim().toLowerCase();
+
+    if (!normalizedEmail || !req.body.password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+
     // Updated SQL query to join USERS and SCHOOL tables
     const sql = `
       SELECT 
@@ -95,10 +117,10 @@ const verifyUserLogin = async (req, res, next) => {
         U.profilepiclink
       FROM USERS AS U
       INNER JOIN SCHOOL AS S ON U.schoolid = S.schoolid
-      WHERE U.email = $1
+      WHERE LOWER(TRIM(U.email)) = $1
     `;
 
-    const results = await client.query(sql, [req.body.username]);
+    const results = await client.query(sql, [normalizedEmail]);
 
     if (results.rows.length > 0) {
       const user = results.rows[0];
@@ -144,11 +166,19 @@ const registerNewUser = async (req, res, next) => {
   console.log(req.body);
 
   try {
-    const email = req.body.email;
+    const email = req.body.email?.trim().toLowerCase();
     const username = req.body.username || `${req.body.firstName} ${req.body.lastName}`;
 
+    if (!email || !req.body.password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+
+    if (!req.body.firstName || !req.body.lastName) {
+      return res.status(400).json({ message: "First name and last name are required" });
+    }
+
     // Check if email already exists
-    const checkUserQuery = "SELECT * FROM USERS WHERE email = $1";
+    const checkUserQuery = "SELECT * FROM USERS WHERE LOWER(TRIM(email)) = $1";
     const checkUserResult = await pool.query(checkUserQuery, [email]);
 
     if (checkUserResult.rows.length > 0) {
@@ -166,37 +196,109 @@ const registerNewUser = async (req, res, next) => {
       });
     }
 
-    // Hash user's password
+    // Stage signup data first; user row is inserted only after code verification.
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(req.body.password, salt);
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Generate JWT for the user
-    const token = generateToken(email);
+    signupVerificationStore.set(email, {
+      email,
+      username,
+      firstName: req.body.firstName,
+      lastName: req.body.lastName,
+      hashedPassword,
+      role: req.body.role || "Approved",
+      code: verificationCode,
+      attempts: 0,
+      expiresAt: Date.now() + SIGNUP_CODE_EXPIRY_MS,
+    });
 
-    // Insert new user into the database
+    pruneExpiredSignupVerifications();
+    await sendSignupVerificationCode(email, verificationCode);
+
+    return res.status(200).json({
+      message: "Verification code sent to email",
+      requiresEmailVerification: true,
+      email,
+    });
+
+  } catch (error) {
+    console.error(error.stack);
+    return res.status(500).json({ message: "Server error: " + error.stack });
+  }
+};
+
+const verifySignupCode = async (req, res, next) => {
+  try {
+    const email = req.body.email?.trim().toLowerCase();
+    const code = req.body.code?.toString().trim();
+
+    if (!email || !code) {
+      return res.status(400).json({ message: "Email and code are required" });
+    }
+
+    pruneExpiredSignupVerifications();
+    const pendingSignup = signupVerificationStore.get(email);
+
+    if (!pendingSignup) {
+      return res.status(400).json({ message: "No active verification found for this email" });
+    }
+
+    // Expired or over-attempted codes force the user to restart registration.
+    if (pendingSignup.expiresAt <= Date.now()) {
+      signupVerificationStore.delete(email);
+      return res.status(400).json({ message: "Verification code has expired" });
+    }
+
+    if (pendingSignup.attempts >= MAX_SIGNUP_VERIFY_ATTEMPTS) {
+      signupVerificationStore.delete(email);
+      return res.status(429).json({ message: "Too many invalid attempts. Please register again." });
+    }
+
+    if (pendingSignup.code !== code) {
+      pendingSignup.attempts += 1;
+      signupVerificationStore.set(email, pendingSignup);
+      return res.status(401).json({ message: "Invalid verification code" });
+    }
+
+    const checkUserQuery = "SELECT * FROM USERS WHERE LOWER(TRIM(email)) = $1";
+    const checkUserResult = await pool.query(checkUserQuery, [email]);
+
+    if (checkUserResult.rows.length > 0) {
+      signupVerificationStore.delete(email);
+      return res.status(400).json({ message: "This email is already registered" });
+    }
+
     const insertUserQuery =
       "INSERT INTO USERS (Email, Username, FirstName, LastName, Password, SchoolID, Role) VALUES ($1, $2, $3, $4, $5, $6, $7)";
 
+    // Verification passed, so we can safely create the account.
     await pool.query(insertUserQuery, [
-      email,
-      username,
-      req.body.firstName,
-      req.body.lastName,
-      hashedPassword,
+      pendingSignup.email,
+      pendingSignup.username,
+      pendingSignup.firstName,
+      pendingSignup.lastName,
+      pendingSignup.hashedPassword,
       1,
-      req.body.role
+      pendingSignup.role,
     ]);
 
-    return res.status(200).json({
-      Email: email,
-      Username: username,
-      FirstName: req.body.firstName,
-      LastName: req.body.lastName,
-      SchoolID: 1,
-      Role: req.body.role,
-      token: token,
-    });
+    signupVerificationStore.delete(email);
 
+    const token = generateToken({ email: pendingSignup.email, role: pendingSignup.role });
+
+    return res.status(200).json({
+      message: "Email verified. User registered successfully",
+      user: {
+        Email: pendingSignup.email,
+        Username: pendingSignup.username,
+        FirstName: pendingSignup.firstName,
+        LastName: pendingSignup.lastName,
+        SchoolID: 1,
+        Role: pendingSignup.role,
+      },
+      token,
+    });
   } catch (error) {
     console.error(error.stack);
     return res.status(500).json({ message: "Server error: " + error.stack });
@@ -2603,6 +2705,7 @@ export {
   getPendingPosts,
   verifyUserLogin,
   registerNewUser,
+  verifySignupCode,
   getUserPosts,
   getPostLikes,
   likePost,

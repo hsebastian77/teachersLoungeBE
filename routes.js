@@ -13,6 +13,7 @@ import {
   getCommunityApprovedPosts,
   verifyUserLogin,
   registerNewUser,
+  verifySignupCode,
   getApprovedUsers,
   getPendingUsers,
   approveUser,
@@ -91,6 +92,8 @@ router.get("/test", (req, res) => {
 // Authentication Routes (open)
 router.post("/login", verifyUserLogin);
 router.post("/register", registerNewUser);
+// Completes signup only after user enters the emailed 6-digit code.
+router.post("/register/verify", verifySignupCode);
 router.post("/api/auth/social", handleSocialLogin);
 router.post("/api/auth/google", handleGoogleAuth);
 router.post("/api/auth/linkedin", handleLinkedInAuth);

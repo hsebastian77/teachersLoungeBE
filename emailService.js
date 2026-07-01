@@ -33,3 +33,21 @@ export async function send2FACode(email, code) {
     throw error;
   }
 } 
+
+export async function sendSignupVerificationCode(email, code) {
+  const mailOptions = {
+    from: process.env.EMAIL_FROM,
+    to: email,
+    subject: "Your Teachers Lounge Signup Verification Code",
+    text: `Your signup verification code is: ${code}`,
+    html: `<b>Your signup verification code is: ${code}</b>`,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`Signup verification email sent to ${email}: ${info.response}`);
+  } catch (error) {
+    console.error("Error sending signup verification email:", error);
+    throw error;
+  }
+}
