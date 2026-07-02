@@ -2,8 +2,11 @@ import express from 'express';
 import router from './routes.js';
 import twoFactorRoutes from './twoFactor.js';
 import * as dotenv from 'dotenv';
+
 dotenv.config();
+
 const app = express();
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use((_, res, next) => {
@@ -47,7 +50,4 @@ console.log('S3_ACCESS_KEY:', process.env.S3_ACCESS_KEY ? 'Set' : 'Not set');
 console.log('S3_SECRET_KEY:', process.env.S3_SECRET_KEY ? 'Set' : 'Not set');
 console.log('S3_BUCKET:', process.env.S3_BUCKET);
 
-const PORT = process.env.PORT || 4001;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`server running on 0.0.0.0:${PORT}`);
-});
+export default app;
