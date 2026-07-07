@@ -1,6 +1,6 @@
 import pool from "./database.js";
 import bcrypt from "bcrypt";
-import { generateToken } from "./utils/tokenGenerator.js";
+import { generatePreAuthToken, generateToken } from "./utils/tokenGenerator.js";
 import { sendSignupVerificationCode } from "./emailService.js";
 import { s3Upload } from "./fileManagement.js";
 import multer from "multer";
@@ -20,6 +20,7 @@ const s3 = new S3Client({
 const signupVerificationStore = new Map();
 const SIGNUP_CODE_EXPIRY_MS = 10 * 60 * 1000;
 const MAX_SIGNUP_VERIFY_ATTEMPTS = 5;
+const SIGNUP_RESEND_COOLDOWN_MS = 60 * 1000;
 
 // Clears stale verification entries so in-memory state does not grow forever.
 const pruneExpiredSignupVerifications = () => {
@@ -133,10 +134,14 @@ const verifyUserLogin = async (req, res, next) => {
         return res.status(400).json({ message: "Incorrect password" });
       }
 
-      // Generate token and return response with schoolname
-      const token = generateToken(user);
+      // Credentials are valid, but final session is gated behind MFA.
+      const { token: mfaToken, challengeId } = generatePreAuthToken(user);
+      if (typeof mfaToken !== "string" || !mfaToken.trim()) {
+        return res.status(500).json({ message: "Failed to create MFA token" });
+      }
+
       return res.status(200).json({
-        message: "User logged in successfully",
+        message: "MFA verification required",
         user: {
           Email: user.email,
           Username: user.username,
@@ -147,7 +152,10 @@ const verifyUserLogin = async (req, res, next) => {
           color: user.color,
           ProfilePicLink: user.profilepiclink
         },
-        token: token,
+        requires2FA: true,
+        mfaRequired: true,
+        mfaToken,
+        challengeId,
       });
     } else {
       return res.status(400).json({ message: "User doesn't exist" });
@@ -196,6 +204,33 @@ const registerNewUser = async (req, res, next) => {
       });
     }
 
+    // Avoid issuing multiple different codes when frontend retries signup quickly.
+    const existingPendingSignup = signupVerificationStore.get(email);
+    if (existingPendingSignup && existingPendingSignup.expiresAt > Date.now()) {
+      const now = Date.now();
+      const msSinceLastSend = now - (existingPendingSignup.codeSentAt || 0);
+
+      if (msSinceLastSend < SIGNUP_RESEND_COOLDOWN_MS) {
+        return res.status(200).json({
+          message: "Verification code already sent. Please check your email.",
+          requiresEmailVerification: true,
+          email,
+          codeExpiresInSeconds: Math.ceil((existingPendingSignup.expiresAt - now) / 1000),
+        });
+      }
+
+      existingPendingSignup.codeSentAt = now;
+      signupVerificationStore.set(email, existingPendingSignup);
+      await sendSignupVerificationCode(email, existingPendingSignup.code);
+
+      return res.status(200).json({
+        message: "Verification code re-sent to email",
+        requiresEmailVerification: true,
+        email,
+        codeExpiresInSeconds: Math.ceil((existingPendingSignup.expiresAt - now) / 1000),
+      });
+    }
+
     // Stage signup data first; user row is inserted only after code verification.
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(req.body.password, salt);
@@ -210,6 +245,7 @@ const registerNewUser = async (req, res, next) => {
       role: req.body.role || "Approved",
       code: verificationCode,
       attempts: 0,
+      codeSentAt: Date.now(),
       expiresAt: Date.now() + SIGNUP_CODE_EXPIRY_MS,
     });
 
@@ -739,7 +775,7 @@ const getAllApprovedPostsByUser = async (req, res, next) => {
     const sql = `
       SELECT p.*, 
              c.communityname, 
-             COALESCE(u.username, u.firstname || ' ' || u.lastname, 'Deleted Account') AS username
+              COALESCE(u.username, u.firstname || ' ' || u.lastname, 'Deleted Account') AS username,
              COALESCE(COUNT(pl.postid), 0) AS likescount, 
              COALESCE(cmt.commentscount, 0) AS commentscount
       FROM POST p

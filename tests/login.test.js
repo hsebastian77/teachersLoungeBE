@@ -1,17 +1,23 @@
 import request from "supertest";
 import app from "../app.js";
 
+const hasAdminCreds = Boolean(process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD);
+
 describe("POST /login", () => {
-    test("correct credentials return 200 and a token", async () => {
+    const testWithAdminCreds = hasAdminCreds ? test : test.skip;
+
+    testWithAdminCreds("correct credentials return 200 and an MFA challenge token", async () => {
         const res = await request(app)
             .post("/login")
             .send({ username: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD });
         expect(res.status).toBe(200);
-        expect(res.body).toHaveProperty("token");
+        expect(res.body).toHaveProperty("mfaToken");
+        expect(res.body).toHaveProperty("requires2FA", true);
+        expect(res.body).not.toHaveProperty("token");
         expect(res.body).toHaveProperty("user");
     });
 
-    test("wrong password returns 400", async () => {
+    testWithAdminCreds("wrong password returns 400", async () => {
         const res = await request(app)
             .post("/login")
             .send({ username: process.env.ADMIN_EMAIL, password: "wrongpassword" });

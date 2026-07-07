@@ -13,6 +13,10 @@ const userAuth = async (req, res, next) => {
   try {
     const decoded = jwt.verify(tokenValue, process.env.JWT_SECRET); 
 
+    if (decoded.tokenType === 'preauth') {
+      return res.status(401).json({ message: "MFA verification required" });
+    }
+
     const email = decoded.email;
     const role = decoded.role;
     console.log("Email from token:", email);

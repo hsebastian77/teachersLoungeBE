@@ -1,6 +1,6 @@
 import pool from "./database.js";
 import bcrypt from "bcrypt";
-import { generateToken } from "./utils/tokenGenerator.js";
+import { generatePreAuthToken } from "./utils/tokenGenerator.js";
 
 // Function to decode JWT token (without verification for simplicity)
 function decodeJWT(token) {
@@ -18,6 +18,36 @@ function decodeJWT(token) {
     return null;
   }
 }
+
+const buildSocialMfaResponse = (user, mfaToken, challengeId) => {
+  if (typeof mfaToken !== 'string' || !mfaToken.trim()) {
+    throw new Error('Invalid MFA token generated');
+  }
+
+  const responsePayload = {
+    message: "MFA verification required",
+    user: {
+      Email: user.email,
+      FirstName: user.firstname,
+      LastName: user.lastname,
+      SchoolName: user.schoolname,
+      Role: user.role,
+      ProfilePicLink: user.profilepiclink
+    },
+    requires2FA: true,
+    mfaRequired: true,
+    mfaToken,
+    challengeId
+  };
+
+  const expectedUserKeys = ['Email', 'FirstName', 'LastName', 'SchoolName', 'Role', 'ProfilePicLink'];
+  const hasAllExpectedKeys = expectedUserKeys.every((key) => Object.prototype.hasOwnProperty.call(responsePayload.user, key));
+  if (!hasAllExpectedKeys) {
+    throw new Error('Social user payload keys are missing expected fields');
+  }
+
+  return responsePayload;
+};
 
 // Handle social login (Apple, Google, LinkedIn)
 export const handleSocialLogin = async (req, res, next) => {
@@ -73,21 +103,10 @@ export const handleSocialLogin = async (req, res, next) => {
         user.role = 'Approved'; // Update local object
       }
       
-      const token = generateToken(user);
-      
-      return res.status(200).json({
-        message: "User logged in successfully",
-        user: {
-          Email: user.email,
-          FirstName: user.firstname,
-          LastName: user.lastname,
-          SchoolName: user.schoolname,
-          Role: user.role,
-          ProfilePicLink: user.profilepiclink
-        },
-        token: token,
-        requires2FA: false
-      });
+      const { token: mfaToken, challengeId } = generatePreAuthToken(user);
+      const responsePayload = buildSocialMfaResponse(user, mfaToken, challengeId);
+      console.log('Social login response payload:', responsePayload);
+      return res.status(200).json(responsePayload);
     } else {
       // User doesn't exist, create new user
       const defaultPassword = Math.random().toString(36).slice(-8); // Generate random password
@@ -112,21 +131,10 @@ export const handleSocialLogin = async (req, res, next) => {
       const newUserResult = await client.query(checkUserQuery, [email]);
       const newUser = newUserResult.rows[0];
       
-      const token = generateToken(newUser);
-
-      return res.status(200).json({
-        message: "User created and logged in successfully",
-        user: {
-          Email: newUser.email,
-          FirstName: newUser.firstname,
-          LastName: newUser.lastname,
-          SchoolName: newUser.schoolname,
-          Role: newUser.role,
-          ProfilePicLink: newUser.profilepiclink
-        },
-        token: token,
-        requires2FA: false
-      });
+      const { token: mfaToken, challengeId } = generatePreAuthToken(newUser);
+      const responsePayload = buildSocialMfaResponse(newUser, mfaToken, challengeId);
+      console.log('Social login response payload:', responsePayload);
+      return res.status(200).json(responsePayload);
     }
   } catch (error) {
     console.error('Social login error:', error.stack);
