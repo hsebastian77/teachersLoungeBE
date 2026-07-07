@@ -1,6 +1,7 @@
 import express from "express";
 import { handleSocialLogin, handleLinkedInAuth, handleGoogleAuth } from "./socialAuth.js";
 import { userAuth, verifyAdmin, verifyAdminOrOwner, verifyAdminOrCommentOwner } from './middleware/authMiddleware.js';
+import { authRateLimiter, writeOperationRateLimiter } from './middleware/rateLimiters.js';
 import { upload } from "./fileManagement.js";
 import {
   createNewPost,
@@ -90,45 +91,45 @@ router.get("/test", (req, res) => {
 });
 
 // Authentication Routes (open)
-router.post("/login", verifyUserLogin);
+router.post("/login", authRateLimiter, verifyUserLogin);
 router.post("/register", registerNewUser);
 // Completes signup only after user enters the emailed 6-digit code.
 router.post("/register/verify", verifySignupCode);
-router.post("/api/auth/social", handleSocialLogin);
-router.post("/api/auth/google", handleGoogleAuth);
-router.post("/api/auth/linkedin", handleLinkedInAuth);
+router.post("/api/auth/social", authRateLimiter, handleSocialLogin);
+router.post("/api/auth/google", authRateLimiter, handleGoogleAuth);
+router.post("/api/auth/linkedin", authRateLimiter, handleLinkedInAuth);
 // Protected user routes
-router.patch("/updateUserInfo", userAuth, updateUserInfo);
+router.patch("/updateUserInfo", userAuth, writeOperationRateLimiter, updateUserInfo);
 
 // User Management Routes
-router.post("/createNewUser", userAuth, verifyAdmin, createNewUser);
+router.post("/createNewUser", userAuth, verifyAdmin, writeOperationRateLimiter, createNewUser);
 router.get("/getApprovedUsers", userAuth, verifyAdmin, getApprovedUsers);
 router.get("/getPendingUsers", userAuth, verifyAdmin, getPendingUsers);
-router.post("/approveUser", userAuth, verifyAdmin, approveUser);
-router.post("/changeUserColor", userAuth, changeColor);
-router.delete("/deleteUser/:email", deleteUser);
+router.post("/approveUser", userAuth, verifyAdmin, writeOperationRateLimiter, approveUser);
+router.post("/changeUserColor", userAuth, writeOperationRateLimiter, changeColor);
+router.delete("/deleteUser/:email", userAuth, verifyAdmin, writeOperationRateLimiter, deleteUser);
 // router.get("/getSpecificUser", ...);
 // router.post("/promoteUser", ...);
 
 // Post Routes
-router.post("/fileUpload", upload.single('file'), fileUpload);
-router.post("/createNewPost", createNewPost);
+router.post("/fileUpload", userAuth, writeOperationRateLimiter, upload.single('file'), fileUpload);
+router.post("/createNewPost", userAuth, writeOperationRateLimiter, createNewPost);
 router.get("/getAllApprovedPosts", getAllApprovedPosts);
 router.get("/getAllApprovedPostsByUser/:username", getAllApprovedPostsByUser);
 router.get("/getPendingPosts", getPendingPosts);
 router.get("/getUserPosts", getUserPosts);
-router.delete("/deletePost/:postId", userAuth, verifyAdminOrOwner, deletePost);
+router.delete("/deletePost/:postId", userAuth, verifyAdminOrOwner, writeOperationRateLimiter, deletePost);
 
 
 // Community Post Routes
-router.post("/createNewCommunityPost", createNewCommunityPost);
+router.post("/createNewCommunityPost", userAuth, writeOperationRateLimiter, createNewCommunityPost);
 router.get("/getCommunityApprovedPosts", getCommunityApprovedPosts);
 
 // Community Management Routes
-router.post("/createNewCommunity", createNewCommunity); // Assuming this was implemented as per dbLogic.js
+router.post("/createNewCommunity", userAuth, writeOperationRateLimiter, createNewCommunity); // Assuming this was implemented as per dbLogic.js
 router.get("/getAllCommunities", getAllCommunities);
-router.post("/joinCommunity", joinCommunity);
-router.delete("/leaveCommunity", leaveCommunity);
+router.post("/joinCommunity", userAuth, writeOperationRateLimiter, joinCommunity);
+router.delete("/leaveCommunity", userAuth, writeOperationRateLimiter, leaveCommunity);
 router.get("/getUserCommunities", getUserCommunities);
 router.get("/getCommunityName", getCommunityName);
 
@@ -137,21 +138,21 @@ router.get("/searchUser", userAuth, searchUser);
 router.get("/findUser", userAuth, findUser);
 
 // Comment Routes
-router.post("/addComment", addComment);
+router.post("/addComment", userAuth, writeOperationRateLimiter, addComment);
 router.get("/getComment", getComment);
 router.get("/getCommentByCommentID", getCommentByCommentID);
 router.get("/getCommentsByPostID", getCommentsByPostID);
-router.put("/updateComment", updateComment);
-router.delete("/deleteComment/:commentId", userAuth, verifyAdminOrCommentOwner, deleteComment);
+router.put("/updateComment", userAuth, writeOperationRateLimiter, updateComment);
+router.delete("/deleteComment/:commentId", userAuth, verifyAdminOrCommentOwner, writeOperationRateLimiter, deleteComment);
 
 // Messaging Routes
-router.post("/createConversation", createConversation);
+router.post("/createConversation", userAuth, writeOperationRateLimiter, createConversation);
 router.get("/getConversations", getConversations);
-router.post("/sendMessage", sendMessage);
+router.post("/sendMessage", userAuth, writeOperationRateLimiter, sendMessage);
 router.get("/getMessages", getMessages);
 router.get("/getLastMessage", getLastMessage);
 router.get("/getConversationDetails", getConversationDetails);
-router.post("/updateConversationTitle", updateConversationTitle);
+router.post("/updateConversationTitle", userAuth, writeOperationRateLimiter, updateConversationTitle);
 
 // Friend Routes
 router.get("/getUserInfo", userAuth, getUserInfo);
@@ -163,39 +164,39 @@ router.get("/getSentFriendRequests", userAuth, getSentFriendRequests);
 router.get("/getPendingFriendRequests", userAuth, getPendingFriendRequests);
 
 // Liking Post Routes
-router.post("/likePost", userAuth, likePost);
+router.post("/likePost", userAuth, writeOperationRateLimiter, likePost);
 router.post("/getPostLikes", getPostLikes);
 router.post("/checkLikedPost", userAuth, checkLikedPost);
-router.post("/unlikePost", userAuth, unlikePost);
+router.post("/unlikePost", userAuth, writeOperationRateLimiter, unlikePost);
 
 // Muting Routes
-router.post("/muteUser", muteUser);
-router.delete("/unmuteUser", unmuteUser);
-router.get("/getMuteList", getMuteList);
-router.get("/checkIfMuted", checkIfMuted)
+router.post("/muteUser", userAuth, writeOperationRateLimiter, muteUser);
+router.delete("/unmuteUser", userAuth, writeOperationRateLimiter, unmuteUser);
+router.get("/getMuteList", userAuth, getMuteList);
+router.get("/checkIfMuted", userAuth, checkIfMuted)
 
 // Blocking Routes
-router.post("/blockUser", blockUser);
-router.delete("/unblockUser", unblockUser);
-router.get("/checkIfBlocked", checkIfBlocked);
+router.post("/blockUser", userAuth, writeOperationRateLimiter, blockUser);
+router.delete("/unblockUser", userAuth, writeOperationRateLimiter, unblockUser);
+router.get("/checkIfBlocked", userAuth, checkIfBlocked);
 
 // Private Spaces Routes
-router.post("/createPrivateSpace", userAuth, createPrivateSpace);
+router.post("/createPrivateSpace", userAuth, writeOperationRateLimiter, createPrivateSpace);
 router.get("/getUserPrivateSpaces", userAuth, getUserPrivateSpaces);
 router.get("/getPrivateSpaceDetails/:spaceId", userAuth, getPrivateSpaceDetails);
-router.post("/inviteToPrivateSpace/:spaceId", userAuth, inviteToPrivateSpace);
-router.post("/acceptPrivateSpaceInvitation/:invitationId", userAuth, acceptPrivateSpaceInvitation);
+router.post("/inviteToPrivateSpace/:spaceId", userAuth, writeOperationRateLimiter, inviteToPrivateSpace);
+router.post("/acceptPrivateSpaceInvitation/:invitationId", userAuth, writeOperationRateLimiter, acceptPrivateSpaceInvitation);
 router.get("/getPendingInvitations", userAuth, getPendingInvitations);
-router.post("/createPrivateSpacePost/:spaceId", userAuth, createPrivateSpacePost);
+router.post("/createPrivateSpacePost/:spaceId", userAuth, writeOperationRateLimiter, createPrivateSpacePost);
 router.get("/getPrivateSpacePosts/:spaceId", userAuth, getPrivateSpacePosts);
-router.post("/addPrivateSpaceComment/:postId", userAuth, addPrivateSpaceComment);
+router.post("/addPrivateSpaceComment/:postId", userAuth, writeOperationRateLimiter, addPrivateSpaceComment);
 router.get("/getPrivateSpaceComments/:postId", userAuth, getPrivateSpaceComments);
 router.get("/getPrivateSpaceMembers/:spaceId", userAuth, getPrivateSpaceMembers);
-router.delete("/removePrivateSpaceMember/:spaceId/:memberEmail", userAuth, removePrivateSpaceMember);
-router.delete("/deletePrivateSpacePost/:postId", userAuth, deletePrivateSpacePost);
+router.delete("/removePrivateSpaceMember/:spaceId/:memberEmail", userAuth, writeOperationRateLimiter, removePrivateSpaceMember);
+router.delete("/deletePrivateSpacePost/:postId", userAuth, writeOperationRateLimiter, deletePrivateSpacePost);
 router.get("/getInvitableUsers/:spaceId", userAuth, getInvitableUsers);
 router.get("/searchInvitableUsers/:spaceId", userAuth, searchInvitableUsers);
-router.delete("/dissolvePrivateSpace/:spaceId", userAuth, dissolvePrivateSpace);
+router.delete("/dissolvePrivateSpace/:spaceId", userAuth, writeOperationRateLimiter, dissolvePrivateSpace);
 
 // Test Route
 router.get("/getTest", getTest);

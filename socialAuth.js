@@ -1,6 +1,7 @@
 import pool from "./database.js";
 import bcrypt from "bcrypt";
 import { generatePreAuthToken } from "./utils/tokenGenerator.js";
+import { logSecurityEvent } from "./utils/securityLogger.js";
 
 // Function to decode JWT token (without verification for simplicity)
 function decodeJWT(token) {
@@ -51,22 +52,18 @@ const buildSocialMfaResponse = (user, mfaToken, challengeId) => {
 
 // Handle social login (Apple, Google, LinkedIn)
 export const handleSocialLogin = async (req, res, next) => {
-  console.log('Social login hit');
-  console.log('Request body:', req.body);
-  
   let { provider, email, firstName, lastName, providerId, identityToken } = req.body;
 
   // For Apple login, extract email from identityToken if email is null
   if (provider === 'apple' && !email && identityToken) {
-    console.log('Decoding Apple identity token...');
     const decodedToken = decodeJWT(identityToken);
     if (decodedToken && decodedToken.email) {
       email = decodedToken.email;
-      console.log('Extracted email from Apple token:', email);
     }
   }
 
   if (!provider || !email) {
+    logSecurityEvent('SOCIAL_LOGIN_VALIDATION_FAILED', { ip: req.ip, provider, email }, 'warning');
     return res.status(400).json({ message: "Provider and email are required" });
   }
 
@@ -95,7 +92,6 @@ export const handleSocialLogin = async (req, res, next) => {
       
       // If user is Pending and this is a social login, update to Approved
       if (user.role === 'Pending') {
-        console.log('Updating social login user from Pending to Approved');
         const updateUserQuery = `
           UPDATE USERS SET role = 'Approved' WHERE email = $1
         `;
@@ -105,7 +101,7 @@ export const handleSocialLogin = async (req, res, next) => {
       
       const { token: mfaToken, challengeId } = generatePreAuthToken(user);
       const responsePayload = buildSocialMfaResponse(user, mfaToken, challengeId);
-      console.log('Social login response payload:', responsePayload);
+      logSecurityEvent('SOCIAL_LOGIN_MFA_CHALLENGE_CREATED', { ip: req.ip, email, provider, challengeId }, 'info');
       return res.status(200).json(responsePayload);
     } else {
       // User doesn't exist, create new user
@@ -133,10 +129,11 @@ export const handleSocialLogin = async (req, res, next) => {
       
       const { token: mfaToken, challengeId } = generatePreAuthToken(newUser);
       const responsePayload = buildSocialMfaResponse(newUser, mfaToken, challengeId);
-      console.log('Social login response payload:', responsePayload);
+      logSecurityEvent('SOCIAL_SIGNUP_MFA_CHALLENGE_CREATED', { ip: req.ip, email, provider, challengeId }, 'info');
       return res.status(200).json(responsePayload);
     }
   } catch (error) {
+    logSecurityEvent('SOCIAL_LOGIN_SERVER_ERROR', { ip: req.ip, email, provider }, 'error');
     console.error('Social login error:', error.stack);
     return res.status(500).json({ message: "Server error: " + error.message });
   } finally {
@@ -146,9 +143,6 @@ export const handleSocialLogin = async (req, res, next) => {
 
 // Handle LinkedIn OAuth (if needed for code exchange)
 export const handleLinkedInAuth = async (req, res, next) => {
-  console.log('LinkedIn auth hit');
-  console.log('Request body:', req.body);
-  
   const { code } = req.body;
 
   if (!code) {
@@ -164,11 +158,6 @@ export const handleLinkedInAuth = async (req, res, next) => {
   }
 
   try {
-    console.log('Exchanging LinkedIn authorization code for access token...');
-    console.log('Using Client ID:', '77bw10d90022pu');
-    console.log('Using Client Secret length:', process.env.LINKEDIN_CLIENT_SECRET?.length);
-    console.log('Using redirect URI:', 'https://omegaeducationaltechsolutions.com/linkedin-redirect');
-    
     // Exchange authorization code for access token
     const tokenParams = {
       grant_type: 'authorization_code',
@@ -177,11 +166,6 @@ export const handleLinkedInAuth = async (req, res, next) => {
       client_id: '77bw10d90022pu',
       client_secret: process.env.LINKEDIN_CLIENT_SECRET,
     };
-    
-    console.log('Token request parameters:', {
-      ...tokenParams,
-      client_secret: '[REDACTED]'
-    });
     
     const tokenResponse = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
       method: 'POST',
@@ -192,10 +176,9 @@ export const handleLinkedInAuth = async (req, res, next) => {
     });
 
     const tokenData = await tokenResponse.json();
-    console.log('LinkedIn token exchange response:', tokenData);
-    console.log('Token response status:', tokenResponse.status);
 
     if (!tokenData.access_token) {
+      logSecurityEvent('LINKEDIN_TOKEN_EXCHANGE_FAILED', { ip: req.ip, provider: 'linkedin' }, 'warning');
       console.error('LinkedIn token exchange failed:', {
         status: tokenResponse.status,
         statusText: tokenResponse.statusText,
@@ -209,7 +192,6 @@ export const handleLinkedInAuth = async (req, res, next) => {
     }
 
     // Get user profile and email information using LinkedIn OpenID Connect userinfo endpoint
-    console.log('Fetching LinkedIn user profile and email using OpenID Connect...');
     const userInfoResponse = await fetch('https://api.linkedin.com/v2/userinfo', {
       headers: {
         'Authorization': `Bearer ${tokenData.access_token}`,
@@ -217,10 +199,10 @@ export const handleLinkedInAuth = async (req, res, next) => {
       },
     });
     const userInfoData = await userInfoResponse.json();
-    console.log('LinkedIn userinfo data:', userInfoData);
 
     // Check if we got the required user information
     if (!userInfoData.email) {
+      logSecurityEvent('LINKEDIN_USERINFO_MISSING_EMAIL', { ip: req.ip, provider: 'linkedin' }, 'warning');
       console.error('LinkedIn userinfo failed - no email. API Response:', userInfoData);
       return res.status(400).json({ 
         message: "Failed to get user email from LinkedIn OpenID Connect API",
@@ -233,8 +215,6 @@ export const handleLinkedInAuth = async (req, res, next) => {
     const firstName = userInfoData.given_name || userInfoData.name?.split(' ')[0] || 'LinkedIn';
     const lastName = userInfoData.family_name || userInfoData.name?.split(' ').slice(1).join(' ') || 'User';
     const userId = userInfoData.sub; // OpenID Connect standard user identifier
-
-    console.log('LinkedIn user info extracted:', { email, firstName, lastName, id: userId });
 
     // Now handle the social login with the user data
     req.body = {
@@ -249,6 +229,7 @@ export const handleLinkedInAuth = async (req, res, next) => {
     return handleSocialLogin(req, res, next);
 
   } catch (error) {
+    logSecurityEvent('LINKEDIN_AUTH_SERVER_ERROR', { ip: req.ip, provider: 'linkedin' }, 'error');
     console.error('LinkedIn auth error:', error.stack);
     return res.status(500).json({ message: "Server error: " + error.message });
   }
@@ -256,9 +237,6 @@ export const handleLinkedInAuth = async (req, res, next) => {
 
 // Handle Google OAuth code exchange
 export const handleGoogleAuth = async (req, res, next) => {
-  console.log('Google auth hit');
-  console.log('Request body:', req.body);
-  
   const { code, redirect_uri, code_verifier, client_id } = req.body;
 
   if (!code) {
@@ -268,9 +246,6 @@ export const handleGoogleAuth = async (req, res, next) => {
   // Use the redirect_uri and client_id from the request
   const actualRedirectUri = redirect_uri || 'tlapp://oauthredirect';
   const actualClientId = client_id || '503056180344-4segfcuad38tbsheem42k34ouou0dbj1.apps.googleusercontent.com';
-  
-  console.log('Using redirect URI:', actualRedirectUri);
-  console.log('Using client ID:', actualClientId);
   
   // Prepare token exchange body
   const tokenParams = {
@@ -283,7 +258,6 @@ export const handleGoogleAuth = async (req, res, next) => {
   // For mobile clients with PKCE, we don't need client_secret
   if (code_verifier) {
     tokenParams.code_verifier = code_verifier;
-    console.log('Using PKCE with code_verifier - no client secret needed for mobile');
   } else {
     // Only use client secret for web clients without PKCE
     if (!process.env.GOOGLE_CLIENT_SECRET) {
@@ -293,7 +267,6 @@ export const handleGoogleAuth = async (req, res, next) => {
       });
     }
     tokenParams.client_secret = process.env.GOOGLE_CLIENT_SECRET;
-    console.log('Using client secret for web client authentication');
   }
 
   try {
@@ -307,9 +280,9 @@ export const handleGoogleAuth = async (req, res, next) => {
     });
 
     const tokenData = await tokenResponse.json();
-    console.log('Google token exchange response:', tokenData);
 
     if (!tokenData.access_token) {
+      logSecurityEvent('GOOGLE_TOKEN_EXCHANGE_FAILED', { ip: req.ip, provider: 'google' }, 'warning');
       return res.status(400).json({ 
         message: "Failed to exchange authorization code for access token",
         error: tokenData
@@ -321,9 +294,9 @@ export const handleGoogleAuth = async (req, res, next) => {
       `https://www.googleapis.com/oauth2/v1/userinfo?access_token=${tokenData.access_token}`
     );
     const userData = await userInfoResponse.json();
-    console.log('Google user data:', userData);
 
     if (!userData.email) {
+      logSecurityEvent('GOOGLE_USERINFO_MISSING_EMAIL', { ip: req.ip, provider: 'google' }, 'warning');
       return res.status(400).json({ message: "Failed to get user email from Google" });
     }
 
@@ -340,6 +313,7 @@ export const handleGoogleAuth = async (req, res, next) => {
     return handleSocialLogin(req, res, next);
 
   } catch (error) {
+    logSecurityEvent('GOOGLE_AUTH_SERVER_ERROR', { ip: req.ip, provider: 'google' }, 'error');
     console.error('Google auth error:', error.stack);
     return res.status(500).json({ message: "Server error: " + error.message });
   }

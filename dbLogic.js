@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { generatePreAuthToken, generateToken } from "./utils/tokenGenerator.js";
 import { sendSignupVerificationCode } from "./emailService.js";
 import { s3Upload } from "./fileManagement.js";
+import { logSecurityEvent } from "./utils/securityLogger.js";
 import multer from "multer";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
@@ -18,9 +19,13 @@ const s3 = new S3Client({
 });
 
 const signupVerificationStore = new Map();
+const loginAttemptStore = new Map();
 const SIGNUP_CODE_EXPIRY_MS = 10 * 60 * 1000;
 const MAX_SIGNUP_VERIFY_ATTEMPTS = 5;
 const SIGNUP_RESEND_COOLDOWN_MS = 60 * 1000;
+const LOGIN_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const MAX_LOGIN_ATTEMPTS = 8;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 
 // Clears stale verification entries so in-memory state does not grow forever.
 const pruneExpiredSignupVerifications = () => {
@@ -31,6 +36,43 @@ const pruneExpiredSignupVerifications = () => {
       signupVerificationStore.delete(email);
     }
   }
+};
+
+const getLoginAttemptEntry = (emailKey) => {
+  const now = Date.now();
+  const currentEntry = loginAttemptStore.get(emailKey);
+
+  if (!currentEntry || now - currentEntry.firstAttemptAt > LOGIN_ATTEMPT_WINDOW_MS) {
+    const freshEntry = {
+      count: 0,
+      firstAttemptAt: now,
+      lockedUntil: null,
+    };
+    loginAttemptStore.set(emailKey, freshEntry);
+    return freshEntry;
+  }
+
+  if (currentEntry.lockedUntil && currentEntry.lockedUntil <= now) {
+    currentEntry.count = 0;
+    currentEntry.firstAttemptAt = now;
+    currentEntry.lockedUntil = null;
+    loginAttemptStore.set(emailKey, currentEntry);
+  }
+
+  return currentEntry;
+};
+
+const registerFailedLoginAttempt = (emailKey) => {
+  const now = Date.now();
+  const entry = getLoginAttemptEntry(emailKey);
+  entry.count += 1;
+
+  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
+    entry.lockedUntil = now + LOGIN_LOCKOUT_MS;
+  }
+
+  loginAttemptStore.set(emailKey, entry);
+  return entry;
 };
 
 //Functions to connect to DB
@@ -101,7 +143,14 @@ const verifyUserLogin = async (req, res, next) => {
     const normalizedEmail = req.body.username?.trim().toLowerCase();
 
     if (!normalizedEmail || !req.body.password) {
+      logSecurityEvent('LOGIN_VALIDATION_FAILED', { ip: req.ip, email: normalizedEmail }, 'warning');
       return res.status(400).json({ message: "Email and password are required" });
+    }
+
+    const loginAttemptEntry = getLoginAttemptEntry(normalizedEmail);
+    if (loginAttemptEntry.lockedUntil && loginAttemptEntry.lockedUntil > Date.now()) {
+      logSecurityEvent('LOGIN_LOCKOUT_ACTIVE', { ip: req.ip, email: normalizedEmail }, 'warning');
+      return res.status(429).json({ message: 'Account temporarily locked due to repeated failed login attempts' });
     }
 
     // Updated SQL query to join USERS and SCHOOL tables
@@ -131,8 +180,17 @@ const verifyUserLogin = async (req, res, next) => {
       const match = await bcrypt.compare(req.body.password, user.password);
 
       if (!match) {
+        const attemptState = registerFailedLoginAttempt(normalizedEmail);
+        logSecurityEvent('LOGIN_INVALID_PASSWORD', {
+          ip: req.ip,
+          email: normalizedEmail,
+          failedAttempts: attemptState.count,
+          lockedUntil: attemptState.lockedUntil,
+        }, 'warning');
         return res.status(400).json({ message: "Incorrect password" });
       }
+
+      loginAttemptStore.delete(normalizedEmail);
 
       // Credentials are valid, but final session is gated behind MFA.
       const { token: mfaToken, challengeId } = generatePreAuthToken(user);
@@ -158,9 +216,17 @@ const verifyUserLogin = async (req, res, next) => {
         challengeId,
       });
     } else {
+      const attemptState = registerFailedLoginAttempt(normalizedEmail);
+      logSecurityEvent('LOGIN_UNKNOWN_USER', {
+        ip: req.ip,
+        email: normalizedEmail,
+        failedAttempts: attemptState.count,
+        lockedUntil: attemptState.lockedUntil,
+      }, 'warning');
       return res.status(400).json({ message: "User doesn't exist" });
     }
   } catch (error) {
+    logSecurityEvent('LOGIN_SERVER_ERROR', { ip: req.ip, email: req.body.username }, 'error');
     console.error(error.stack);
     return res.status(500).json({ message: "Server error: " + error.stack });
   } finally {

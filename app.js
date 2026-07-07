@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import router from './routes.js';
 import twoFactorRoutes from './twoFactor.js';
 import * as dotenv from 'dotenv';
@@ -7,14 +8,40 @@ dotenv.config();
 
 const app = express();
 
+const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+const defaultAllowedOrigins = [
+    'http://localhost:19006',
+    'http://localhost:3000',
+    'http://localhost:8081',
+    'exp://127.0.0.1:8081',
+];
+
+const allowedOrigins = configuredOrigins.length > 0 ? configuredOrigins : defaultAllowedOrigins;
+const corsOptions = {
+    origin(origin, callback) {
+        // Allow non-browser clients and same-origin requests with no Origin header.
+        if (!origin) {
+            return callback(null, true);
+        }
+
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        return callback(new Error('Origin not allowed by CORS policy'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use((_, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    next();
-});
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use(router);
 app.use('/2fa', twoFactorRoutes);
@@ -42,12 +69,5 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
     // Don't exit the process, just log the error
 });
-
-// Debug environment variables
-console.log('Environment variables check:');
-console.log('AWS_REGION:', process.env.AWS_REGION);
-console.log('S3_ACCESS_KEY:', process.env.S3_ACCESS_KEY ? 'Set' : 'Not set');
-console.log('S3_SECRET_KEY:', process.env.S3_SECRET_KEY ? 'Set' : 'Not set');
-console.log('S3_BUCKET:', process.env.S3_BUCKET);
 
 export default app;
