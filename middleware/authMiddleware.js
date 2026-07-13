@@ -1,6 +1,37 @@
 import jwt from "jsonwebtoken";
 import pool from '../database.js';
 
+let commentIdColumnCache = null;
+
+const getCommentIdColumn = async () => {
+  if (commentIdColumnCache) {
+    return commentIdColumnCache;
+  }
+
+  const columnResult = await pool.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'comment'
+    `
+  );
+
+  const availableColumns = columnResult.rows.map((row) => row.column_name);
+  const preferredColumns = ['commentid', 'comment_id', 'id'];
+
+  const match = preferredColumns.find((candidate) =>
+    availableColumns.some((column) => column.toLowerCase() === candidate)
+  );
+
+  if (!match) {
+    throw new Error('Unable to resolve comment ID column in comment table');
+  }
+
+  commentIdColumnCache = availableColumns.find((column) => column.toLowerCase() === match);
+  return commentIdColumnCache;
+};
+
 const userAuth = async (req, res, next) => {
   const token = req.headers.authorization;
 
@@ -75,13 +106,18 @@ const verifyAdminOrOwner = async (req, res, next) => {
 };
 
 const verifyAdminOrCommentOwner = async (req, res, next) => {
-  const commentId = req.params.commentId;
+  const commentId = req.params.commentId || req.body?.commentId || req.query?.commentId;
 
   console.log("Comment ID from params:", commentId);
 
+  if (!commentId) {
+    return res.status(400).json({ message: "commentId is required" });
+  }
+
   try {
+    const commentIdColumn = await getCommentIdColumn();
     const result = await pool.query(
-      'SELECT * FROM comment WHERE commentid = $1',
+      `SELECT * FROM comment WHERE "${commentIdColumn}" = $1`,
       [commentId]
     );
 

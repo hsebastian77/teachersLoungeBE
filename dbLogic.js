@@ -1,7 +1,8 @@
 import pool from "./database.js";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import { generatePreAuthToken, generateToken } from "./utils/tokenGenerator.js";
-import { sendSignupVerificationCode } from "./emailService.js";
+import { sendPasswordResetCodeEmail, sendPasswordResetEmail, sendSignupVerificationCode } from "./emailService.js";
 import { s3Upload } from "./fileManagement.js";
 import { logSecurityEvent } from "./utils/securityLogger.js";
 import multer from "multer";
@@ -26,6 +27,10 @@ const SIGNUP_RESEND_COOLDOWN_MS = 60 * 1000;
 const LOGIN_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_TOKEN_EXPIRY_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_MAX_ATTEMPTS = 5;
+let passwordResetTableReady = false;
+let commentIdColumnCache = null;
 
 // Clears stale verification entries so in-memory state does not grow forever.
 const pruneExpiredSignupVerifications = () => {
@@ -73,6 +78,62 @@ const registerFailedLoginAttempt = (emailKey) => {
 
   loginAttemptStore.set(emailKey, entry);
   return entry;
+};
+
+const ensurePasswordResetTable = async () => {
+  if (passwordResetTableReady) {
+    return;
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id BIGSERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query("ALTER TABLE password_reset_tokens ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0");
+  await pool.query("ALTER TABLE password_reset_tokens ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 5");
+
+  passwordResetTableReady = true;
+};
+
+const hashResetToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+const getCommentIdColumn = async () => {
+  if (commentIdColumnCache) {
+    return commentIdColumnCache;
+  }
+
+  const columnResult = await pool.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'comment'
+    `
+  );
+
+  const availableColumns = columnResult.rows.map((row) => row.column_name);
+  const preferredColumns = ['commentid', 'comment_id', 'id'];
+
+  const match = preferredColumns.find((candidate) =>
+    availableColumns.some((column) => column.toLowerCase() === candidate)
+  );
+
+  if (!match) {
+    throw new Error('Unable to resolve comment ID column in comment table');
+  }
+
+  commentIdColumnCache = availableColumns.find((column) => column.toLowerCase() === match);
+  return commentIdColumnCache;
 };
 
 //Functions to connect to DB
@@ -402,6 +463,173 @@ const verifySignupCode = async (req, res, next) => {
       token,
     });
   } catch (error) {
+    console.error(error.stack);
+    return res.status(500).json({ message: "Server error: " + error.stack });
+  }
+};
+
+const requestPasswordReset = async (req, res, next) => {
+  const normalizedEmail = req.body.email?.trim().toLowerCase();
+
+  if (!normalizedEmail) {
+    return res.status(400).json({ message: "Email is required" });
+  }
+
+  const genericSuccessMessage =
+    "If an account with that email exists, a password reset link has been sent.";
+
+  try {
+    await ensurePasswordResetTable();
+
+    const userResult = await pool.query(
+      "SELECT email FROM USERS WHERE LOWER(TRIM(email)) = $1",
+      [normalizedEmail]
+    );
+
+    if (userResult.rows.length === 0) {
+      logSecurityEvent("PASSWORD_RESET_REQUEST_UNKNOWN_EMAIL", { ip: req.ip, email: normalizedEmail }, "info");
+      return res.status(200).json({ message: genericSuccessMessage });
+    }
+
+    const resetCode = crypto.randomInt(100000, 1000000).toString();
+    const tokenHash = hashResetToken(resetCode);
+
+    await pool.query(
+      "DELETE FROM password_reset_tokens WHERE LOWER(TRIM(email)) = $1 OR expires_at <= NOW()",
+      [normalizedEmail]
+    );
+
+    await pool.query(
+      `
+      INSERT INTO password_reset_tokens (email, token_hash, expires_at, attempts, max_attempts)
+      VALUES ($1, $2, NOW() + ($3::INT * INTERVAL '1 millisecond'), 0, $4)
+      `,
+      [normalizedEmail, tokenHash, PASSWORD_RESET_TOKEN_EXPIRY_MS, PASSWORD_RESET_MAX_ATTEMPTS]
+    );
+
+    const frontendResetUrl = process.env.FRONTEND_RESET_PASSWORD_URL || process.env.APP_RESET_PASSWORD_URL;
+    const resetUrl = frontendResetUrl
+      ? `${frontendResetUrl}${frontendResetUrl.includes("?") ? "&" : "?"}email=${encodeURIComponent(normalizedEmail)}`
+      : null;
+
+    await sendPasswordResetCodeEmail(normalizedEmail, resetCode, resetUrl);
+
+    logSecurityEvent("PASSWORD_RESET_REQUEST_SENT", { ip: req.ip, email: normalizedEmail }, "info");
+    return res.status(200).json({ message: genericSuccessMessage });
+  } catch (error) {
+    logSecurityEvent("PASSWORD_RESET_REQUEST_FAILED", { ip: req.ip, email: normalizedEmail }, "error");
+    console.error(error.stack);
+    return res.status(500).json({ message: "Server error: " + error.stack });
+  }
+};
+
+const confirmPasswordReset = async (req, res, next) => {
+  const token = req.body.token?.toString().trim();
+  const code = req.body.code?.toString().trim();
+  const normalizedEmail = req.body.email?.trim().toLowerCase();
+  const newPassword = req.body.newPassword?.toString();
+
+  if ((!token && !code) || !newPassword) {
+    return res.status(400).json({ message: "Reset code (or token) and new password are required" });
+  }
+
+  if (newPassword.length < 8) {
+    return res.status(400).json({ message: "Password must be at least 8 characters long" });
+  }
+
+  try {
+    await ensurePasswordResetTable();
+
+    let tokenRow;
+    let tokenEmail;
+
+    if (code) {
+      if (!/^\d{6}$/.test(code)) {
+        return res.status(400).json({ message: "Reset code must be 6 digits" });
+      }
+
+      if (!normalizedEmail) {
+        return res.status(400).json({ message: "Email is required when using reset code" });
+      }
+
+      const emailTokenResult = await pool.query(
+        `
+        SELECT id, email, token_hash, attempts, max_attempts
+        FROM password_reset_tokens
+        WHERE LOWER(TRIM(email)) = $1
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [normalizedEmail]
+      );
+
+      if (emailTokenResult.rows.length === 0) {
+        logSecurityEvent("PASSWORD_RESET_INVALID_TOKEN", { ip: req.ip, email: normalizedEmail }, "warning");
+        return res.status(400).json({ message: "Invalid or expired reset code" });
+      }
+
+      tokenRow = emailTokenResult.rows[0];
+      tokenEmail = tokenRow.email?.trim().toLowerCase();
+
+      if (tokenRow.attempts >= tokenRow.max_attempts) {
+        await pool.query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1", [tokenRow.id]);
+        logSecurityEvent("PASSWORD_RESET_TOO_MANY_ATTEMPTS", { ip: req.ip, email: tokenEmail }, "warning");
+        return res.status(429).json({ message: "Too many invalid reset attempts" });
+      }
+
+      const codeHash = hashResetToken(code);
+      if (codeHash !== tokenRow.token_hash) {
+        await pool.query(
+          "UPDATE password_reset_tokens SET attempts = attempts + 1 WHERE id = $1",
+          [tokenRow.id]
+        );
+        logSecurityEvent("PASSWORD_RESET_INVALID_TOKEN", { ip: req.ip, email: normalizedEmail }, "warning");
+        return res.status(400).json({ message: "Invalid or expired reset code" });
+      }
+    } else {
+      const tokenHash = hashResetToken(token);
+      const tokenResult = await pool.query(
+        `
+        SELECT id, email, attempts, max_attempts
+        FROM password_reset_tokens
+        WHERE token_hash = $1
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        LIMIT 1
+        `,
+        [tokenHash]
+      );
+
+      if (tokenResult.rows.length === 0) {
+        logSecurityEvent("PASSWORD_RESET_INVALID_TOKEN", { ip: req.ip, email: normalizedEmail }, "warning");
+        return res.status(400).json({ message: "Invalid or expired reset token" });
+      }
+
+      tokenRow = tokenResult.rows[0];
+      tokenEmail = tokenRow.email?.trim().toLowerCase();
+    }
+
+    if (normalizedEmail && normalizedEmail !== tokenEmail) {
+      logSecurityEvent("PASSWORD_RESET_EMAIL_TOKEN_MISMATCH", { ip: req.ip, email: normalizedEmail }, "warning");
+      return res.status(400).json({ message: "Invalid reset credentials" });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await pool.query("UPDATE USERS SET password = $1 WHERE LOWER(TRIM(email)) = $2", [hashedPassword, tokenEmail]);
+    await pool.query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1", [tokenRow.id]);
+    await pool.query(
+      "UPDATE password_reset_tokens SET used_at = NOW() WHERE LOWER(TRIM(email)) = $1 AND used_at IS NULL",
+      [tokenEmail]
+    );
+
+    logSecurityEvent("PASSWORD_RESET_SUCCESS", { ip: req.ip, email: tokenEmail }, "info");
+    return res.status(200).json({ message: "Password reset successful" });
+  } catch (error) {
+    logSecurityEvent("PASSWORD_RESET_CONFIRM_FAILED", { ip: req.ip, email: normalizedEmail }, "error");
     console.error(error.stack);
     return res.status(500).json({ message: "Server error: " + error.stack });
   }
@@ -1350,14 +1578,19 @@ const updateComment = async (req, res, next) => {
 };
 
 const deleteComment = async (req, res) => {
-  const { commentId } = req.params;
+  const commentId = req.params.commentId || req.body?.commentId || req.query?.commentId;
   const requesterEmail = req.userEmail;
   const requesterRole = req.userRole;
 
+  if (!commentId) {
+    return res.status(400).json({ error: "commentId is required" });
+  }
+
   try {
+    const commentIdColumn = await getCommentIdColumn();
 
     const result = await pool.query(
-      "SELECT email FROM comment WHERE commentid = $1",
+      `SELECT email FROM comment WHERE "${commentIdColumn}" = $1`,
       [commentId]
     );
 
@@ -1371,7 +1604,7 @@ const deleteComment = async (req, res) => {
       return res.status(403).json({ error: "Not authorized to delete this comment" });
     }
 
-    await pool.query("DELETE FROM comment WHERE commentid = $1", [commentId]);
+    await pool.query(`DELETE FROM comment WHERE "${commentIdColumn}" = $1`, [commentId]);
     res.status(200).json({ message: "Comment deleted successfully" });
   } catch (err) {
     console.error("Error deleting comment:", err);
@@ -2808,6 +3041,8 @@ export {
   verifyUserLogin,
   registerNewUser,
   verifySignupCode,
+  requestPasswordReset,
+  confirmPasswordReset,
   getUserPosts,
   getPostLikes,
   likePost,

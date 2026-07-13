@@ -1,7 +1,12 @@
 import express from "express";
 import { handleSocialLogin, handleLinkedInAuth, handleGoogleAuth } from "./socialAuth.js";
 import { userAuth, verifyAdmin, verifyAdminOrOwner, verifyAdminOrCommentOwner } from './middleware/authMiddleware.js';
-import { authRateLimiter, writeOperationRateLimiter } from './middleware/rateLimiters.js';
+import {
+  authRateLimiter,
+  passwordResetConfirmRateLimiter,
+  passwordResetRequestRateLimiter,
+  writeOperationRateLimiter
+} from './middleware/rateLimiters.js';
 import { upload } from "./fileManagement.js";
 import {
   createNewPost,
@@ -15,6 +20,8 @@ import {
   verifyUserLogin,
   registerNewUser,
   verifySignupCode,
+  requestPasswordReset,
+  confirmPasswordReset,
   getApprovedUsers,
   getPendingUsers,
   approveUser,
@@ -95,6 +102,8 @@ router.post("/login", authRateLimiter, verifyUserLogin);
 router.post("/register", registerNewUser);
 // Completes signup only after user enters the emailed 6-digit code.
 router.post("/register/verify", verifySignupCode);
+router.post("/password-reset/request", passwordResetRequestRateLimiter, requestPasswordReset);
+router.post("/password-reset/confirm", passwordResetConfirmRateLimiter, confirmPasswordReset);
 router.post("/api/auth/social", authRateLimiter, handleSocialLogin);
 router.post("/api/auth/google", authRateLimiter, handleGoogleAuth);
 router.post("/api/auth/linkedin", authRateLimiter, handleLinkedInAuth);
@@ -144,6 +153,7 @@ router.get("/getCommentByCommentID", getCommentByCommentID);
 router.get("/getCommentsByPostID", getCommentsByPostID);
 router.put("/updateComment", userAuth, writeOperationRateLimiter, updateComment);
 router.delete("/deleteComment/:commentId", userAuth, verifyAdminOrCommentOwner, writeOperationRateLimiter, deleteComment);
+router.delete("/deleteComment", userAuth, verifyAdminOrCommentOwner, writeOperationRateLimiter, deleteComment);
 
 // Messaging Routes
 router.post("/createConversation", userAuth, writeOperationRateLimiter, createConversation);

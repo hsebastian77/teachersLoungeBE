@@ -27,10 +27,29 @@ const otpVerifyRateLimiter = buildLimiter({
   message: 'Too many OTP verification attempts. Please try again later.',
 });
 
+const passwordResetRequestRateLimiter = buildLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many password reset requests. Please try again later.',
+});
+
+const passwordResetConfirmRateLimiter = buildLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: 'Too many password reset attempts. Please try again later.',
+});
+
 const writeOperationRateLimiter = buildLimiter({
   windowMs: 60 * 1000,
   max: 120,
   message: 'Too many write requests. Please slow down.',
 });
 
-export { authRateLimiter, otpSendRateLimiter, otpVerifyRateLimiter, writeOperationRateLimiter };
+export {
+  authRateLimiter,
+  otpSendRateLimiter,
+  otpVerifyRateLimiter,
+  passwordResetRequestRateLimiter,
+  passwordResetConfirmRateLimiter,
+  writeOperationRateLimiter,
+};

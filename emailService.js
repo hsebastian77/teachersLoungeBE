@@ -49,3 +49,43 @@ export async function sendSignupVerificationCode(email, code) {
     throw error;
   }
 }
+
+export async function sendPasswordResetEmail(email, resetUrl) {
+  const mailOptions = {
+    from: process.env.EMAIL_FROM,
+    to: email,
+    subject: "Your Teachers Lounge Password Reset Link",
+    text: `Use this link to reset your password: ${resetUrl}`,
+    html: `<p>Use this link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`Password reset email sent to ${email}: ${info.response}`);
+  } catch (error) {
+    console.error("Error sending password reset email:", error);
+    throw error;
+  }
+}
+
+export async function sendPasswordResetCodeEmail(email, code, resetUrl) {
+  const linkText = resetUrl
+    ? `<p>If your email app supports links, you can also open: <a href="${resetUrl}">${resetUrl}</a></p>`
+    : "";
+
+  const mailOptions = {
+    from: process.env.EMAIL_FROM,
+    to: email,
+    subject: "Your Teachers Lounge Password Reset Code",
+    text: `Your password reset code is: ${code}. This code expires shortly.`,
+    html: `<p>Your password reset code is:</p><h2>${code}</h2><p>This code expires shortly.</p>${linkText}`,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`Password reset code email sent to ${email}: ${info.response}`);
+  } catch (error) {
+    console.error("Error sending password reset code email:", error);
+    throw error;
+  }
+}
