@@ -49,20 +49,25 @@ const userAuth = async (req, res, next) => {
     }
 
     const email = decoded.email;
-    const role = decoded.role;
-    console.log("Email from token:", email);
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+    const result = await pool.query(
+        "SELECT email, role FROM users WHERE email = $1",
+        [email]
+    );
+    const user = result.rows[0];
 
     if (result.rows.length === 0) {
       return res.status(401).json({ message: "No user found with this email" });
     }
 
     // Set both for backward compatibility and new consistency
-    req.userEmail = email;
-    req.userRole = role;
-    req.user = { email, role }; // Add this for private spaces consistency
+    req.userEmail = user.email;
+    req.userRole = user.role;
+    // Add this for private spaces consistency
+    req.user = {
+        email: user.email,
+        role: user.role
+    };
 
-    console.log("Decoded user:", email, role);
     next();
   } catch (err) {
     console.error("Token verification failed:", err);
