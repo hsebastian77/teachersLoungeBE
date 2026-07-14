@@ -70,7 +70,7 @@ const userAuth = async (req, res, next) => {
 
     next();
   } catch (err) {
-    console.error("Token verification failed:", err);
+    console.error("Token verification failed");
     return res.status(401).json({ message: "Invalid token" });
   }
 };
@@ -97,7 +97,6 @@ const verifyAdminOrOwner = async (req, res, next) => {
     }
 
     const post = result.rows[0];
-    console.log("Post owner:", post.email);
     if (req.userRole === 'Admin' || post.email === req.userEmail) {
       return next();
     } else {
@@ -105,8 +104,10 @@ const verifyAdminOrOwner = async (req, res, next) => {
     }
 
   } catch (error) {
-    console.error("verifyAdminOrOwner error:", error.stack);
-    return res.status(500).json({ message: "Server error: " + error.stack });
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error"
+    });
   }
 };
 
@@ -139,8 +140,10 @@ const verifyAdminOrCommentOwner = async (req, res, next) => {
     }
 
   } catch (error) {
-    console.error("verifyAdminOrCommentOwner error:", error.stack);
-    return res.status(500).json({ message: "Server error: " + error.stack });
+    console.error(error);
+    return res.status(500).json({
+      message: "Internal server error"
+    });
   }
 };
 
