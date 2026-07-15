@@ -83,14 +83,18 @@ const verifyAdmin = (req, res, next) => {
 };
 
 const verifyAdminOrOwner = async (req, res, next) => {
-  const postId = req.params.postId;
+  const postId = Number(req.params.postId);
+  
+  if (!req.params.postId || isNaN(postId)) {
+    return res.status(400).json({ message: "Invalid post ID" });
+  }
+  
   console.log("Post ID:", postId);
   console.log("Request path:", req.path);
-  console.log("Post ID from params:", req.params.postId);
   console.log("User role:", req.userRole);
 
   try {
-    const result = await pool.query('SELECT * FROM post WHERE postid = $1', [postId]);
+    const result = await pool.query('SELECT email FROM post WHERE postid = $1', [postId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: "Post not found" });
@@ -114,6 +118,10 @@ const verifyAdminOrOwner = async (req, res, next) => {
 const verifyAdminOrCommentOwner = async (req, res, next) => {
   const commentId = req.params.commentId || req.body?.commentId || req.query?.commentId;
 
+  if (!req.params.commentId || isNaN(commentId)) {
+    return res.status(400).json({ message: "Invalid comment ID" });
+  }
+
   console.log("Comment ID from params:", commentId);
 
   if (!commentId) {
@@ -123,9 +131,9 @@ const verifyAdminOrCommentOwner = async (req, res, next) => {
   try {
     const commentIdColumn = await getCommentIdColumn();
     const result = await pool.query(
-      `SELECT * FROM comment WHERE "${commentIdColumn}" = $1`,
-      [commentId]
-    );
+    `SELECT email FROM comment WHERE "${commentIdColumn}" = $1`,
+    [commentId]
+);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: "Comment not found" });
