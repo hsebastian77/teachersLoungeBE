@@ -15,6 +15,8 @@ const transporter = nodemailer.createTransport({
 
 // Main send function
 export async function send2FACode(email, code) {
+  console.log(`2FA code for ${email}: ${code}`);
+
   const mailOptions = {
     from: process.env.EMAIL_FROM,
     to: email,

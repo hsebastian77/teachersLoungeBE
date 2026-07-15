@@ -2,6 +2,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import { configDotenv } from "dotenv";
+import crypto from "crypto";
 
 // Load environment variables from .env file
 configDotenv();
@@ -50,8 +51,10 @@ const s3Upload = async (req,res) => {
     // Log file
     console.log("\nFile: " + file + "\n");
 
-    // Name file with timestamp
-    const fileLoc = "uploads/" + file.originalname.split(' ').join('_');
+    // Use a unique S3 key so files with the same original name never overwrite
+    // each other. The original name is stored on the post for display.
+    const safeFileName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileLoc = `uploads/${crypto.randomUUID()}-${safeFileName}`;
 
     // Set up parameters for S3 upload
     const params = {
@@ -141,7 +144,7 @@ const storage = multer.memoryStorage();
 
 const upload = multer({ 
   storage: storage,
-  limits: { fieldSize: 50 * 1024 * 1024 } // Increase field size limit to 50MB
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 /* Function that parses file from http request body

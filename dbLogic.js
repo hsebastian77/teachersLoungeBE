@@ -1122,9 +1122,9 @@ const createNewPost = async (req, res, next) => {
     req.body.title,
     req.body.content,
     req.body.email,
-    req.body.fileUrl,
-    req.body.filedisplayname,
-    req.body.filetype,
+    req.body.fileUrl || null,
+    req.body.fileDisplayName || null,
+    req.body.fileType || null,
     req.body.approved || 1, // Default to approved
     req.body.communityid// Assign communityid if provided
   ];
@@ -1386,8 +1386,8 @@ const createNewCommunityPost = async (req, res, next) => {
     req.body.content,
     req.body.email,
     req.body.fileUrl || null, // Handle optional file URL
-    req.body.fileDisplayName || "None",
-    req.body.fileType || "None",
+    req.body.fileDisplayName || null,
+    req.body.fileType || null,
     req.body.communityId // Ensure this is passed correctly
   ];
 
