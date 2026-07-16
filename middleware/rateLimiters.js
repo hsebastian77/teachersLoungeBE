@@ -45,11 +45,18 @@ const writeOperationRateLimiter = buildLimiter({
   message: 'Too many write requests. Please slow down.',
 });
 
+const usernameLookupRateLimiter = buildLimiter({
+  windowMs: 1000,
+  max: 5,
+  message: 'Too many username lookup requests. Please pause typing.',
+});
+
 export {
   authRateLimiter,
   otpSendRateLimiter,
   otpVerifyRateLimiter,
   passwordResetRequestRateLimiter,
   passwordResetConfirmRateLimiter,
+  usernameLookupRateLimiter,
   writeOperationRateLimiter,
 };

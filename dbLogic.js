@@ -5,6 +5,7 @@ import { generatePreAuthToken, generateToken } from "./utils/tokenGenerator.js";
 import { sendPasswordResetCodeEmail, sendPasswordResetEmail, sendSignupVerificationCode } from "./emailService.js";
 import { s3Upload } from "./fileManagement.js";
 import { logSecurityEvent } from "./utils/securityLogger.js";
+import { normalizePostAttachment } from "./utils/postInput.js";
 import multer from "multer";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
@@ -1113,6 +1114,17 @@ const createNewPost = async (req, res, next) => {
     return res.status(400).json({ message: 'Community ID is required for community posts.' });
   }
 
+  let attachment;
+  try {
+    attachment = normalizePostAttachment({
+      fileUrl: req.body.fileUrl,
+      fileDisplayName: req.body.filedisplayname,
+      fileType: req.body.filetype,
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
+  }
+
   const sql = `
     INSERT INTO POST (title, content, email, fileurl, filedisplayname, filetype, approved, communityid)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -1121,10 +1133,10 @@ const createNewPost = async (req, res, next) => {
   const values = [
     req.body.title,
     req.body.content,
-    req.body.email,
-    req.body.fileUrl || null,
-    req.body.fileDisplayName || null,
-    req.body.fileType || null,
+    req.userEmail || req.body.email,
+    attachment.fileUrl,
+    attachment.fileDisplayName,
+    attachment.fileType,
     req.body.approved || 1, // Default to approved
     req.body.communityid// Assign communityid if provided
   ];
@@ -1377,6 +1389,17 @@ const createNewCommunityPost = async (req, res, next) => {
   console.log('createNewCommunityPost hit');
   console.log(req.body);
 
+  let attachment;
+  try {
+    attachment = normalizePostAttachment({
+      fileUrl: req.body.fileUrl,
+      fileDisplayName: req.body.fileDisplayName,
+      fileType: req.body.fileType,
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
+  }
+
   const sql = `
     INSERT INTO POST (title, content, email, fileurl, filedisplayname, filetype, communityid)
     VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1384,10 +1407,10 @@ const createNewCommunityPost = async (req, res, next) => {
   const values = [
     req.body.title,
     req.body.content,
-    req.body.email,
-    req.body.fileUrl || null, // Handle optional file URL
-    req.body.fileDisplayName || null,
-    req.body.fileType || null,
+    req.userEmail || req.body.email,
+    attachment.fileUrl,
+    attachment.fileDisplayName,
+    attachment.fileType,
     req.body.communityId // Ensure this is passed correctly
   ];
 
@@ -1426,9 +1449,13 @@ const getCommunityName = async (req, res) => {
 
 // Searches for a user
 const searchUser = async (req, res, next) => {
-  const searchQuery = req.query.searchQuery;
+  const searchQuery = req.query.searchQuery?.trim();
   console.log(searchQuery);
   console.log('searchUser hit');
+
+  if (!searchQuery || searchQuery.length < 2) {
+    return res.status(400).json({ message: "Search query must be at least 2 characters" });
+  }
 
   if (searchQuery !== "") {
     const sql = `SELECT * FROM USERS 

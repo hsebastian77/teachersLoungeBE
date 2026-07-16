@@ -5,6 +5,7 @@ import {
   authRateLimiter,
   passwordResetConfirmRateLimiter,
   passwordResetRequestRateLimiter,
+  usernameLookupRateLimiter,
   writeOperationRateLimiter
 } from './middleware/rateLimiters.js';
 import { upload } from "./fileManagement.js";
@@ -143,8 +144,8 @@ router.get("/getUserCommunities", getUserCommunities);
 router.get("/getCommunityName", getCommunityName);
 
 // User Search Routes
-router.get("/searchUser", userAuth, searchUser);
-router.get("/findUser", userAuth, findUser);
+router.get("/searchUser", usernameLookupRateLimiter, userAuth, searchUser);
+router.get("/findUser", usernameLookupRateLimiter, userAuth, findUser);
 
 // Comment Routes
 router.post("/addComment", userAuth, writeOperationRateLimiter, addComment);
