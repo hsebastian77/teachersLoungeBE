@@ -45,30 +45,28 @@ const generatePresignedUrl = async (key) => {
 };
 
 //Function to upload to s3
-const s3Upload = async (req,res) => {   
-    const file = req.file;
-    
-    // Log file
-    console.log("\nFile: " + file + "\n");
-
-    // Use a unique S3 key so files with the same original name never overwrite
-    // each other. The original name is stored on the post for display.
-    const safeFileName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const fileLoc = `uploads/${crypto.randomUUID()}-${safeFileName}`;
-
-    // Set up parameters for S3 upload
-    const params = {
-      Bucket: process.env.S3_BUCKET,
-      Body: file.buffer,
-      Key: fileLoc,
-      ContentType: file.mimetype
-    };
-
-    // Upload file to S3
-    console.log("Putting object in S3 with params: ", params);
-    const command = new PutObjectCommand(params);
-
+const s3Upload = async (req,res) => {
     try {
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ message: "No attachment was received" });
+      }
+
+      if (!process.env.S3_BUCKET || !process.env.S3_ACCESS_KEY || !process.env.S3_SECRET_KEY) {
+        return res.status(503).json({ message: "File storage is not configured" });
+      }
+
+      // Use a unique S3 key so files with the same original name never overwrite
+      // each other. The original name is stored on the post for display.
+      const safeFileName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fileLoc = `uploads/${crypto.randomUUID()}-${safeFileName || "attachment"}`;
+      const command = new PutObjectCommand({
+        Bucket: process.env.S3_BUCKET,
+        Body: file.buffer,
+        Key: fileLoc,
+        ContentType: file.mimetype || "application/octet-stream"
+      });
+
       console.log("Attempting S3 upload...");
       await s3.send(command);
       
@@ -82,7 +80,6 @@ const s3Upload = async (req,res) => {
           file: fileLoc,
           url: presignedUrl 
         });
-        console.log("File uploaded successfully with presigned URL: " + presignedUrl);
         return presignedUrl;
       } else {
         // Fallback to direct URL if presigned URL generation fails
@@ -93,29 +90,21 @@ const s3Upload = async (req,res) => {
           file: fileLoc,
           url: fileUrl 
         });
-        console.log("File uploaded successfully: " + fileUrl);
         return fileUrl;
       }
 
     } catch (err) {
-      console.error("S3 Upload Error:", err);
-      console.error("Error details:", {
-        message: err.message,
-        code: err.code,
-        name: err.name
-      });
+      console.error("S3 upload failed:", err.name, err.message);
       
       // Send error response but don't crash the server
       if (!res.headersSent) {
         res.status(500).send({ 
-          message: 'Image upload failed', 
-          error: err.message,
-          details: 'S3 configuration or network issue'
+          message: 'The attachment could not be stored. Check the S3 configuration.'
         });
       }
       return null;
     }
-  }
+  };
 
 const s3Delete = (req,res,next)=>{
   var regEx= new RegExp("uploads/(.*)")
@@ -157,4 +146,4 @@ const fileHelper = multer({
 
 const fileUpload = s3Upload;
 
-export { s3Upload, s3Delete, upload, fileUpload };
+export { generatePresignedUrl, s3Upload, s3Delete, upload, fileUpload };

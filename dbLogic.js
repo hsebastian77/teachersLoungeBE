@@ -3,13 +3,35 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { generatePreAuthToken, generateToken } from "./utils/tokenGenerator.js";
 import { sendPasswordResetCodeEmail, sendPasswordResetEmail, sendSignupVerificationCode } from "./emailService.js";
-import { s3Upload } from "./fileManagement.js";
+import { generatePresignedUrl, s3Upload } from "./fileManagement.js";
 import { logSecurityEvent } from "./utils/securityLogger.js";
 import { normalizePostAttachment } from "./utils/postInput.js";
 import multer from "multer";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 import sharp from "sharp";
+
+const getStoredS3Key = (fileUrl) => {
+  if (typeof fileUrl !== "string" || !fileUrl.trim()) return null;
+
+  if (fileUrl.startsWith("uploads/")) return fileUrl;
+
+  try {
+    const key = decodeURIComponent(new URL(fileUrl).pathname.replace(/^\/+/, ""));
+    return key.startsWith("uploads/") ? key : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const refreshPostAttachmentUrls = async (rows) =>
+  Promise.all(rows.map(async (row) => {
+    const key = getStoredS3Key(row.fileurl);
+    if (!key) return row;
+
+    const refreshedUrl = await generatePresignedUrl(key);
+    return refreshedUrl ? { ...row, fileurl: refreshedUrl } : row;
+  }));
 
 // Initialize s3 info
 const s3 = new S3Client({
@@ -1029,9 +1051,8 @@ const getAllApprovedPosts = async (req, res, next) => {
       return res.status(200).json({ data: [] });
     }
 
-    console.log(results.rows)
-
-    return res.status(200).json({ data: results.rows });
+    const posts = await refreshPostAttachmentUrls(results.rows);
+    return res.status(200).json({ data: posts });
   } catch (error) {
     console.error(error.stack);
     return res.status(500).json({ message: "Server error, try again" });
@@ -1093,8 +1114,8 @@ const getAllApprovedPostsByUser = async (req, res, next) => {
       return res.status(200).json({ data: [] });
     }
 
-    console.log(results.rows);
-    return res.status(200).json({ data: results.rows });
+    const posts = await refreshPostAttachmentUrls(results.rows);
+    return res.status(200).json({ data: posts });
   } catch (error) {
     console.error(error.stack);
     return res.status(500).json({ message: "Server error, try again" });
@@ -1118,8 +1139,8 @@ const createNewPost = async (req, res, next) => {
   try {
     attachment = normalizePostAttachment({
       fileUrl: req.body.fileUrl,
-      fileDisplayName: req.body.filedisplayname,
-      fileType: req.body.filetype,
+      fileDisplayName: req.body.fileDisplayName,
+      fileType: req.body.fileType,
     });
   } catch (error) {
     return res.status(400).json({ message: error.message });
@@ -1376,8 +1397,8 @@ const getCommunityApprovedPosts = async (req, res, next) => {
       return res.status(200).json({ data: [] });
     }
 
-    console.log(result.rows);
-    return res.status(200).json({ data: result.rows });
+    const posts = await refreshPostAttachmentUrls(result.rows);
+    return res.status(200).json({ data: posts });
   } catch (error) {
     console.error('Error fetching community posts:', error.stack);
     return res.status(500).json({ message: error.message });
