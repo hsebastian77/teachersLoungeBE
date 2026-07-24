@@ -1482,6 +1482,7 @@ const searchUser = async (req, res, next) => {
     const sql = `SELECT * FROM USERS 
                  WHERE FirstName ILIKE $1 
                  OR LastName ILIKE $1
+                 OR Username ILIKE $1
                  OR Email ILIKE $1`;
 
     try {
@@ -1680,7 +1681,9 @@ const createConversation = async (req, res, next) => {
     }
 
     // Use provided title or default to comma-separated member list
-    const conversationTitle = title || members.join(", ");
+    // Keep the database identifier fields as emails, but never use them as
+    // the default visible conversation title.
+    const conversationTitle = title || "Default Conversation";
 
     // Insert new conversation
     const insertSql = `
@@ -1723,20 +1726,47 @@ const getConversations = async (req, res, next) => {
       return res.status(404).json({ message: "No conversations found" });
     }
 
+    const memberEmails = [
+      ...new Set(results.rows.flatMap((row) => row.members || [])),
+    ];
+    const usernameResult = memberEmails.length
+      ? await client.query(
+          `SELECT email,
+                  COALESCE(
+                    NULLIF(TRIM(username), ''),
+                    NULLIF(TRIM(firstname || ' ' || lastname), ''),
+                    'User'
+                  ) AS username
+           FROM users
+           WHERE email = ANY($1::text[])`,
+          [memberEmails]
+        )
+      : { rows: [] };
+    const usernamesByEmail = new Map(
+      usernameResult.rows.map((user) => [
+        user.email.trim().toLowerCase(),
+        user.username,
+      ])
+    );
+    const usernameFor = (email) =>
+      usernamesByEmail.get(email.trim().toLowerCase()) || "User";
+
     const conversations = results.rows.map(row => {
-      const members = row.members;
-      // Use the title if it exists, or fall back to showing the other participant's name
+      const members = row.members || [];
+      const memberUsernames = members.map(usernameFor);
+      const wasGeneratedFromEmails = row.title === members.join(", ");
       const title =
-        row.title === "Default Conversation"
+        !row.title || row.title === "Default Conversation" || wasGeneratedFromEmails
           ? members
-            .filter(email => email !== userEmail)
-            .map(email => email.split("@")[0])
-            .join(", ")
+              .filter((email) => email !== userEmail)
+              .map(usernameFor)
+              .join(", ")
           : row.title;
 
       return {
         conversationId: row.conversationid,
         members,
+        memberUsernames,
         title
       };
     });
@@ -1782,7 +1812,18 @@ const getMessages = async (req, res, next) => {
   const conversationId = Number(req.query.conversationId); // Ensure this is a number
 
   // Use the correct column name
-  const sql = `SELECT * FROM MESSAGE WHERE conversation_id = $1;`;
+  const sql = `
+    SELECT
+      m.*,
+      COALESCE(
+        NULLIF(TRIM(u.username), ''),
+        NULLIF(TRIM(u.firstname || ' ' || u.lastname), ''),
+        'User'
+      ) AS sender_username
+    FROM message m
+    LEFT JOIN users u ON LOWER(TRIM(u.email)) = LOWER(TRIM(m.sender))
+    WHERE m.conversation_id = $1;
+  `;
 
   try {
     // Pass parameters as an array
@@ -1823,9 +1864,55 @@ const getConversationDetails = async (req, res, next) => {
   const sql = `SELECT title, members FROM conversation WHERE conversationid = $1`;
 
   try {
-    // Pass parameters as an array
     const result = await pool.query(sql, [conversationId]);
-    return res.status(200).json({ data: result.rows[0] });
+    if (!result.rows.length) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    const conversation = result.rows[0];
+    const members = conversation.members || [];
+    const usernameResult = members.length
+      ? await pool.query(
+          `SELECT email,
+                  COALESCE(
+                    NULLIF(TRIM(username), ''),
+                    NULLIF(TRIM(firstname || ' ' || lastname), ''),
+                    'User'
+                  ) AS username
+           FROM users
+           WHERE email = ANY($1::text[])`,
+          [members]
+        )
+      : { rows: [] };
+    const usernamesByEmail = new Map(
+      usernameResult.rows.map((user) => [
+        user.email.trim().toLowerCase(),
+        user.username,
+      ])
+    );
+    const memberUsernames = members.map(
+      (email) =>
+        usernamesByEmail.get(email.trim().toLowerCase()) || "User"
+    );
+    const wasGeneratedFromEmails = conversation.title === members.join(", ");
+    const displayTitle =
+      !conversation.title ||
+      conversation.title === "Default Conversation" ||
+      wasGeneratedFromEmails
+        ? members
+            .map((email, index) => ({ email, username: memberUsernames[index] }))
+            .filter(({ email }) => email !== req.userEmail)
+            .map(({ username }) => username)
+            .join(", ")
+        : conversation.title;
+
+    return res.status(200).json({
+      data: {
+        ...conversation,
+        title: displayTitle,
+        memberUsernames,
+      },
+    });
   } catch (error) {
     console.error(error.stack);
     return res.status(500).json({ message: "Server error, try again" });
@@ -1987,7 +2074,7 @@ const getFriendsList = async (req, res, next) => {
   const debugSql1 = `SELECT * FROM FRIENDS WHERE friender = $1`;
   const debugSql2 = `SELECT * FROM FRIENDS WHERE friendee = $1`;
   
-  const sql = `SELECT U.email, U.firstname, U.lastname, U.schoolid, U.role
+  const sql = `SELECT U.email, U.username, U.firstname, U.lastname, U.schoolid, U.role
                FROM USERS AS U JOIN 
                   (SELECT friendee AS FriendEmail FROM FRIENDS
                    WHERE friender = $1
